@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { useReactToPrint } from 'react-to-print';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,8 @@ import { ProjectsForm } from '@/components/editor/ProjectsForm';
 import { AdditionalForm } from '@/components/editor/AdditionalForm';
 import { SettingsPanel } from '@/components/editor/SettingsPanel';
 import { CVPreview } from '@/components/editor/CVPreview';
+import { authApi, cvApi } from '@/integrations/api/client';
+import { saveCVToAPI } from '@/hooks/useCVStorage';
 import {
   FileText,
   Download,
@@ -34,26 +36,149 @@ import {
   Check,
   ZoomIn,
   ZoomOut,
+  Loader2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
-export default function Editor() {
+interface EditorProps {
+  hideHeader?: boolean;
+}
+
+export default function Editor({ hideHeader = false }: EditorProps) {
   const [searchParams] = useSearchParams();
-  const [cvData, setCvData, resetCvData] = useLocalStorage<CVData>('cv-data', defaultCVData);
-  const [cvSettings, setCvSettings] = useLocalStorage<CVSettings>('cv-settings', {
+  const cvIdParam = searchParams.get('cvId');
+  const templateParam = searchParams.get('template') as CVSettings['template'] | null;
+
+  // Local storage (fallback for non-authenticated users)
+  const [localCvData, setLocalCvData, resetLocalCvData] = useLocalStorage<CVData>('cv-data', defaultCVData);
+  const [localCvSettings, setLocalCvSettings] = useLocalStorage<CVSettings>('cv-settings', {
     ...defaultCVSettings,
-    template: (searchParams.get('template') as CVSettings['template']) || defaultCVSettings.template,
+    template: templateParam || defaultCVSettings.template,
+  });
+
+  // State
+  const [cvData, setCvData] = useState<CVData>(defaultCVData);
+  const [cvSettings, setCvSettings] = useState<CVSettings>({
+    ...defaultCVSettings,
+    template: templateParam || defaultCVSettings.template,
   });
   const [activeTab, setActiveTab] = useState('personal');
   const [mobileView, setMobileView] = useState<'edit' | 'preview'>('edit');
   const [zoom, setZoom] = useState(100);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentCvId, setCurrentCvId] = useState<string | null>(cvIdParam);
+  const [isLoadingCV, setIsLoadingCV] = useState(!!cvIdParam);
+  const [isSaving, setIsSaving] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-save indicator
+  // Auth check
   useEffect(() => {
-    setLastSaved(new Date());
-  }, [cvData, cvSettings]);
+    setIsAuthenticated(authApi.isAuthenticated());
+  }, []);
+
+  // Load CV from API if cvId is provided
+  useEffect(() => {
+    const loadCV = async () => {
+      if (!cvIdParam || !isAuthenticated) return;
+
+      setIsLoadingCV(true);
+      try {
+        const { cv } = await cvApi.getById(cvIdParam);
+
+        if (!cv) {
+          toast.error('CV tidak ditemukan atau Anda tidak memiliki akses');
+          return;
+        }
+
+        const loadedCvData = (cv.cv_data as unknown as CVData) || defaultCVData;
+        const loadedCvSettings = (cv.cv_settings as unknown as CVSettings) || defaultCVSettings;
+
+        setCvData({
+          ...defaultCVData,
+          ...loadedCvData,
+          personalInfo: {
+            ...defaultCVData.personalInfo,
+            ...(loadedCvData.personalInfo || {}),
+          },
+          workExperience: loadedCvData.workExperience || [],
+          education: loadedCvData.education || [],
+          skills: loadedCvData.skills || [],
+          projects: loadedCvData.projects || [],
+          certificates: loadedCvData.certificates || [],
+          languages: loadedCvData.languages || [],
+          hobbies: loadedCvData.hobbies || '',
+          achievements: loadedCvData.achievements || '',
+        });
+
+        setCvSettings({
+          ...defaultCVSettings,
+          ...loadedCvSettings,
+        });
+
+        setCurrentCvId(cvIdParam);
+      } catch (err) {
+        console.error('Error loading CV:', err);
+        toast.error('Gagal memuat CV');
+      } finally {
+        setIsLoadingCV(false);
+      }
+    };
+
+    loadCV();
+  }, [cvIdParam, isAuthenticated]);
+
+  // Fallback: if no cvId and not logged in, use localStorage
+  useEffect(() => {
+    if (!cvIdParam && !isAuthenticated) {
+      setCvData(localCvData);
+      setCvSettings(localCvSettings);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-save to API (debounced)
+  const debouncedSave = useCallback(async () => {
+    if (!isAuthenticated || !currentCvId) return;
+
+    setIsSaving(true);
+    try {
+      await saveCVToAPI(currentCvId, cvData, cvSettings);
+      setLastSaved(new Date());
+    } catch (error) {
+      console.error('Auto-save error:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [isAuthenticated, currentCvId, cvData, cvSettings]);
+
+  // Debounce save on changes
+  useEffect(() => {
+    if (!currentCvId || !isAuthenticated) return;
+
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+    saveTimeoutRef.current = setTimeout(() => {
+      debouncedSave();
+    }, 3000);
+
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [cvData, cvSettings, debouncedSave, currentCvId, isAuthenticated]);
+
+  // Also save to localStorage as backup (for non-auth or as fallback)
+  useEffect(() => {
+    if (!currentCvId) {
+      setLocalCvData(cvData);
+      setLocalCvSettings(cvSettings);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cvData, cvSettings, currentCvId]);
 
   const handlePrint = useReactToPrint({
     contentRef: previewRef,
@@ -105,11 +230,18 @@ export default function Editor() {
 
   const handleReset = () => {
     if (window.confirm('Are you sure you want to reset all data? This cannot be undone.')) {
-      resetCvData();
+      setCvData(defaultCVData);
       setCvSettings(defaultCVSettings);
+      if (!currentCvId) {
+        resetLocalCvData();
+      }
       toast.success('CV data reset successfully');
     }
   };
+
+  // Determine back link
+  const backLink = isAuthenticated && currentCvId ? '/dashboard' : '/';
+  const backLabel = isAuthenticated && currentCvId ? 'Dashboard' : 'Back';
 
   const formTabs = [
     { id: 'personal', label: 'Personal', icon: User },
@@ -122,58 +254,99 @@ export default function Editor() {
     { id: 'settings', label: 'Settings', icon: Settings2 },
   ];
 
+  if (isLoadingCV) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto" />
+          <p className="text-slate-500 mt-3 text-sm">Memuat CV...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen flex-col bg-background">
       {/* Header */}
-      <header className="flex h-14 shrink-0 items-center justify-between border-b bg-card px-4">
-        <div className="flex items-center gap-4">
-          <Button asChild variant="ghost" size="sm" className="gap-2">
-            <Link to="/">
-              <ChevronLeft className="h-4 w-4" />
-              <span className="hidden sm:inline">Back</span>
-            </Link>
-          </Button>
-          <div className="flex items-center gap-2">
-            <FileText className="h-5 w-5 text-primary" />
-            <span className="font-semibold">CV Builder</span>
+      {!hideHeader && (
+        <header className="flex h-14 shrink-0 items-center justify-between border-b bg-card px-4">
+          <div className="flex items-center gap-4">
+            <Button asChild variant="ghost" size="sm" className="gap-2">
+              <Link to={backLink}>
+                <ChevronLeft className="h-4 w-4" />
+                <span className="hidden sm:inline">{backLabel}</span>
+              </Link>
+            </Button>
+            <div className="flex items-center gap-2">
+              <FileText className="h-5 w-5 text-primary" />
+              <span className="font-semibold">CV Builder</span>
+            </div>
           </div>
-        </div>
 
-        <div className="flex items-center gap-2">
-          {lastSaved && (
-            <span className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
-              <Check className="h-3 w-3" />
-              Saved locally
-            </span>
-          )}
-          
-          <input
-            type="file"
-            accept=".json"
-            onChange={importJSON}
-            className="hidden"
-            id="import-json"
-          />
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => document.getElementById('import-json')?.click()}
-            className="hidden gap-2 sm:flex"
-          >
-            <Upload className="h-4 w-4" />
-            Import
-          </Button>
-          <Button variant="ghost" size="sm" onClick={exportJSON} className="hidden gap-2 sm:flex">
-            <Save className="h-4 w-4" />
-            Export
-          </Button>
-          <Button size="sm" onClick={() => handlePrint()} className="gap-2">
-            <Download className="h-4 w-4" />
-            <span className="hidden sm:inline">Download PDF</span>
-            <span className="sm:hidden">PDF</span>
-          </Button>
-        </div>
-      </header>
+          <div className="flex items-center gap-2">
+            {/* Save status indicator */}
+            {currentCvId && isAuthenticated && (
+              <span className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
+                {isSaving ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Saving...
+                  </>
+                ) : lastSaved ? (
+                  <>
+                    <Check className="h-3 w-3" />
+                    Saved to cloud
+                  </>
+                ) : null}
+              </span>
+            )}
+            {!currentCvId && lastSaved && (
+              <span className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
+                <Check className="h-3 w-3" />
+                Saved locally
+              </span>
+            )}
+            
+            <input
+              type="file"
+              accept=".json"
+              onChange={importJSON}
+              className="hidden"
+              id="import-json"
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => document.getElementById('import-json')?.click()}
+              className="hidden gap-2 sm:flex"
+            >
+              <Upload className="h-4 w-4" />
+              Import
+            </Button>
+            <Button variant="ghost" size="sm" onClick={exportJSON} className="hidden gap-2 sm:flex">
+              <Save className="h-4 w-4" />
+              Export
+            </Button>
+            <Button size="sm" onClick={() => {
+              if (!isAuthenticated) {
+                toast.error("Akses Ditolak", {
+                  description: "Bagus sekali! CV Anda sudah jadi. Silakan Login/Daftar gratis untuk mendownload hasilnya.",
+                  action: {
+                    label: "Login Sekarang",
+                    onClick: () => window.location.href = '/auth?returnTo=/editor'
+                  }
+                });
+                return;
+              }
+              handlePrint();
+            }} className="gap-2">
+              <Download className="h-4 w-4" />
+              <span className="hidden sm:inline">Download PDF</span>
+              <span className="sm:hidden">PDF</span>
+            </Button>
+          </div>
+        </header>
+      )}
 
       {/* Mobile View Toggle */}
       <div className="flex border-b bg-card p-2 lg:hidden">
