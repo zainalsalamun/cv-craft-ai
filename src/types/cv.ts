@@ -72,7 +72,7 @@ export interface CVData {
 }
 
 export interface CVSettings {
-  template: 'classic' | 'modern' | 'creative';
+  template: 'classic' | 'modern' | 'creative' | 'professional' | 'minimalist' | 'executive' | 'tech' | 'harvard' | 'startup' | 'elegant' | 'academic' | 'infographic';
   accentColor: string;
   fontSize: 'small' | 'medium' | 'large';
   showPhoto: boolean;
