@@ -5,7 +5,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sparkles, Loader2, Globe } from 'lucide-react';
 import { CVData } from '@/types/cv';
-import { supabase } from '@/integrations/supabase/client';
+import { authApi } from '@/integrations/api/client';
 import { toast } from 'sonner';
 
 interface SummaryFormProps {
@@ -25,29 +25,54 @@ export function SummaryForm({ summary, cvData, onChange }: SummaryFormProps) {
   const [language, setLanguage] = useState<'id' | 'en'>('id');
 
   const generateSummary = async () => {
+    if (!authApi.isAuthenticated()) {
+      toast.error("Fitur Premium", {
+        description: "Login sekarang untuk mengaktifkan AI Summary Generator.",
+        action: {
+          label: "Login",
+          onClick: () => window.location.href = '/auth?returnTo=/editor'
+        }
+      });
+      return;
+    }
+
     setIsGenerating(true);
     setGeneratedVariants([]);
     
     try {
-      const { data, error } = await supabase.functions.invoke('generate-summary', {
-        body: { cvData, language }
-      });
+      // Simulate network request
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      const mockVariants = language === 'id' ? [
+        {
+          tone: 'Standard',
+          summary: `Profesional ${cvData.personalInfo.jobTitle || 'di bidang saya'} dengan rekam jejak yang terbukti dalam memberikan hasil yang luar biasa. Berpengalaman dalam memimpin proyek, memecahkan masalah kompleks, dan berkolaborasi dalam lingkungan tim.`
+        },
+        {
+          tone: 'Impact-focused',
+          summary: `Mendorong pertumbuhan dan efisiensi melalui solusi strategis. Berhasil meningkatkan metrik kinerja utama di peran sebelumnya. Mencari peluang untuk membawa keahlian ini ke lingkungan yang dinamis.`
+        },
+        {
+          tone: 'Friendly',
+          summary: `Saya adalah seorang yang antusias dan berdedikasi dengan minat yang besar di bidang ${cvData.personalInfo.jobTitle || 'ini'}. Senang belajar hal baru dan berkontribusi secara positif terhadap tim.`
+        }
+      ] : [
+        {
+          tone: 'Standard',
+          summary: `Experienced ${cvData.personalInfo.jobTitle || 'professional'} with a proven track record of delivering exceptional results. Skilled in project management, problem-solving, and cross-functional collaboration.`
+        },
+        {
+          tone: 'Impact-focused',
+          summary: `Results-driven professional focused on efficiency and growth. Successfully improved key performance metrics in previous roles. Looking to leverage these skills in a dynamic environment.`
+        },
+        {
+          tone: 'Friendly',
+          summary: `Passionate and dedicated individual with a keen interest in ${cvData.personalInfo.jobTitle || 'this field'}. Always eager to learn new things and contribute positively to any team.`
+        }
+      ];
 
-      if (error) {
-        console.error('Error calling generate-summary:', error);
-        toast.error(language === 'id' ? 'Gagal membuat ringkasan. Silakan coba lagi.' : 'Failed to generate summary. Please try again.');
-        return;
-      }
-
-      if (data.error) {
-        toast.error(data.error);
-        return;
-      }
-
-      if (data.variants && Array.isArray(data.variants)) {
-        setGeneratedVariants(data.variants);
-        toast.success(language === 'id' ? 'Ringkasan berhasil dibuat!' : 'Summary generated successfully!');
-      }
+      setGeneratedVariants(mockVariants);
+      toast.success(language === 'id' ? 'Ringkasan berhasil dibuat!' : 'Summary generated successfully!');
     } catch (err) {
       console.error('Unexpected error:', err);
       toast.error(language === 'id' ? 'Terjadi kesalahan. Silakan coba lagi.' : 'An error occurred. Please try again.');
